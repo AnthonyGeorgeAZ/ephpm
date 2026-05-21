@@ -301,6 +301,117 @@ version.
 
 ---
 
+## Authoring middleware in PHP
+
+The pitch most PHP developers care about: **write middleware in PHP,
+using the framework patterns you already know, and compile it to a
+native `.so` for the request pipeline.** This is the path that opens
+once elephc ships `--emit cdylib` (see below). The middleware ABI
+was designed scalar-first specifically so that an AOT-compiled
+subset of PHP could realistically target it.
+
+The authoring experience looks like a normal PHP class implementing
+a small interface — no FFI, no `extern "C"`, no Rust:
+
+```php
+<?php
+// auth.php — your business logic, written as ordinary PHP
+
+use Ephpm\Middleware\{Middleware, Request, Response, Host};
+
+final class JwtAuth implements Middleware
+{
+    private string $issuer;
+    private string $audience;
+    private string $publicKey;
+
+    public function __construct(array $config)
+    {
+        $this->issuer    = $config['issuer'];
+        $this->audience  = $config['audience'];
+        $this->publicKey = file_get_contents($config['public_key_path']);
+    }
+
+    public function invoke(Request $req): Response
+    {
+        $auth = $req->header('Authorization');
+        if ($auth === null || !str_starts_with($auth, 'Bearer ')) {
+            return Response::respond(401, 'missing bearer token');
+        }
+
+        $token = substr($auth, 7);
+        $claims = $this->verifyJwt($token);   // your existing logic
+        if ($claims === null) {
+            return Response::respond(401, 'invalid token');
+        }
+        if ($claims['exp'] < time()) {
+            return Response::respond(401, 'expired token');
+        }
+
+        // Cluster-replicated revocation check via ephpm's KV store
+        if (Host::kv_get("jwt:revoked:{$claims['jti']}") !== null) {
+            return Response::respond(401, 'revoked');
+        }
+
+        // Pass user id downstream as a header so PHP code can read it
+        return Response::rewrite()->setHeader('X-User-Id', $claims['sub']);
+    }
+
+    public function shutdown(): void {}
+
+    private function verifyJwt(string $token): ?array
+    {
+        // Pure PHP JWT verify — same code you'd write for any framework.
+        // No I/O, no extensions, fits the elephc-compilable subset.
+    }
+}
+```
+
+You compile it once:
+
+```bash
+elephc compile --emit cdylib --emit header auth.php
+# → auth.linux-x86_64.so, auth.h
+```
+
+And mount it the same way as any other middleware:
+
+```toml
+[[middleware]]
+library = "auth"
+match   = "/api/*"
+order   = 10
+config  = {
+    issuer = "https://auth.example.com",
+    audience = "api",
+    public_key_path = "/etc/ephpm/jwt-public.pem"
+}
+```
+
+The `Ephpm\Middleware\*` interfaces ship as a PHP stub package
+(`ephpm/middleware`) that's also valid elephc — it gives users
+IDE autocomplete and type checking against the same shape the
+compiled `.so` exposes. The compiled `.so` and the host's
+expectations stay in lockstep because the C ABI is the single
+source of truth.
+
+**Reuse story for existing apps.** Most of the per-request logic
+in a typical PHP app already lives in pure PHP classes with no
+external dependencies — JWT validation, signature checks,
+feature-flag evaluation, request classification, custom rate
+limiting. Those classes lift cleanly into middleware: rename the
+class, implement the `Middleware` interface, recompile. The hot
+path now runs as native code, before PHP boots, at µs latency.
+
+**Mixed-language pipelines work fine.** A vhost can mount Rust,
+C, and elephc-PHP middlewares in the same chain — they all speak
+the same ABI. Use Rust for the perf-critical bits (HMAC verify,
+CIDR matching, regex), use elephc-PHP for the business logic
+that's easier to express in PHP (per-tenant feature flag rules,
+domain-specific validations, A/B routing).
+
+---
+
 ## Off-the-shelf middleware
 
 We ship a curated catalog in-tree under `crates/middleware/*`. The
