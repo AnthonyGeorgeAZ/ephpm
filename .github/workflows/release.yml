@@ -33,7 +33,7 @@ jobs:
   build-linux:
     name: Build (PHP ${{ matrix.php_full }}, linux-x86_64)
     runs-on: [self-hosted, linux, x64]
-    container: ghcr.io/${{ github.repository }}/ephpm-ci:latest
+    container: ephpm/ephpm-ci:latest
     strategy:
       fail-fast: false
       matrix:
@@ -117,7 +117,7 @@ jobs:
   build-windows:
     name: Build (PHP ${{ matrix.php_full }}, windows-x86_64)
     runs-on: [self-hosted, linux, x64]
-    container: ghcr.io/${{ github.repository }}/ephpm-ci:latest
+    container: ephpm/ephpm-ci:latest
     strategy:
       fail-fast: false
       matrix:

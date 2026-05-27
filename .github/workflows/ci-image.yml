@@ -8,30 +8,32 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/ephpm-ci
+  IMAGE_REPO: ephpm/ephpm-ci
 
 jobs:
   build:
     name: Build CI Image
     runs-on: [self-hosted, linux, x64]
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set date tag
+        run: echo "DATE_TAG=$(date +%Y%m%d)" >> "$GITHUB_ENV"
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      - uses: docker/login-action@v3
         with:
-          context: .
-          file: docker/Dockerfile.gha
-          push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # Plain `docker build` (no buildx) — routes through the ephemerd
+      # fake-daemon's /build endpoint and the embedded BuildKit solver.
+      # Avoids the buildkit-in-a-container path that needs --privileged.
+      - name: Build and push
+        env:
+          DOCKER_BUILDKIT: "0"
+        run: |
+          TAG_LATEST="${{ env.IMAGE_REPO }}:latest"
+          TAG_DATED="${{ env.IMAGE_REPO }}:${{ env.DATE_TAG }}"
+          docker build -t "$TAG_LATEST" -t "$TAG_DATED" -f docker/Dockerfile.gha .
+          docker push "$TAG_LATEST"
+          docker push "$TAG_DATED"
