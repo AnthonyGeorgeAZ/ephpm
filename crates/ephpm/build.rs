@@ -73,11 +73,20 @@ fn main() {
     for static_lib in &[
         "ssl", "crypto", "curl", "z", "xml2", "sodium", "iconv", "charset", "png16", "gd", "jpeg",
         "freetype", "onig", "zip", "bz2", "xslt", "exslt",
+        // ICU (intl extension) - C++ library, needs to be in the group
+        "icui18n", "icuuc", "icudata", "icuio",
     ] {
         let archive = lib_dir.join(format!("lib{static_lib}.a"));
         if archive.exists() {
             println!("cargo::rustc-link-arg={}", archive.display());
         }
+    }
+    // For C++ extensions (intl/ICU), link musl-native libstdc++ inside the group
+    let musl_cross_stdcxx = std::path::Path::new(
+        "/opt/x86_64-linux-musl-cross/x86_64-linux-musl/lib/libstdc++.a"
+    );
+    if musl_cross_stdcxx.exists() {
+        println!("cargo::rustc-link-arg={}", musl_cross_stdcxx.display());
     }
     println!("cargo::rustc-link-arg=-Wl,--end-group");
     println!("cargo::rustc-link-arg=-Wl,-Bdynamic");

@@ -60,6 +60,13 @@ fn validate_sdk(lib_dir: &Path, include_dir: &Path, target_os: &str) {
 /// Link libphp and its platform-specific system library dependencies.
 fn link_php(lib_dir: &Path, target_os: &str) {
     println!("cargo::rustc-link-search=native={}", lib_dir.display());
+
+    // For C++ extensions (intl/ICU), add musl-native libstdc++ search path
+    let musl_cross_lib = std::path::Path::new("/opt/x86_64-linux-musl-cross/x86_64-linux-musl/lib");
+    if musl_cross_lib.exists() {
+        println!("cargo::rustc-link-search=native={}", musl_cross_lib.display());
+        println!("cargo::warning=Added musl-cross libstdc++ path: {}", musl_cross_lib.display());
+    }
     if target_os == "windows" {
         // Windows PHP ships as php8embed.dll + import lib (.lib).
         // Use dylib linkage so the import lib resolves to the DLL at runtime.
@@ -79,6 +86,8 @@ fn link_php(lib_dir: &Path, target_os: &str) {
     for static_lib in &[
         "ssl", "crypto", "curl", "z", "xml2", "sodium", "iconv", "charset", "png16", "gd", "jpeg",
         "freetype", "onig", "zip", "bz2", "xslt", "exslt",
+        "icui18n", "icuuc", "icudata",
+        "stdc++",
     ] {
         // Unix uses libfoo.a, Windows uses foo.lib
         let unix_path = lib_dir.join(format!("lib{static_lib}.a"));
@@ -350,20 +359,33 @@ fn find_clang_resource_include() -> Option<PathBuf> {
 /// `apt install musl-tools` provides the `musl-gcc` wrapper around the host
 /// GCC; the libgcc.a symbols PHP's JIT needs live there. We add that lib
 /// directory to the linker search path so `-lgcc` resolves.
-fn find_musl_libgcc() -> Option<PathBuf> {
-    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "x86_64".into());
-    let musl_triple = format!("{arch}-linux-musl");
-    // On Ubuntu/Debian, `musl-tools` provides a `musl-gcc` wrapper around the
-    // host GCC. The symbols PHP's JIT needs (__cpu_indicator_init, __cpu_model)
-    // live in the *host* GCC's libgcc.a, not in a musl-specific copy.
-    let gnu_triple = format!("{arch}-linux-gnu");
+fn find_musl_libgcc() -> Option<std::path::PathBuf> {
+    // 1. Universal Fix: Ask the active compiler directly for the exact libgcc path
+    if let Ok(output) = std::process::Command::new("gcc")
+        .arg("-print-libgcc-file-name")
+        .output()
+    {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout);
+            let path = std::path::PathBuf::from(path_str.trim());
+            if path.exists() {
+                if let Some(parent) = path.parent() {
+                    return Some(parent.to_path_buf());
+                }
+            }
+        }
+    }
 
-    // Common locations where musl-cross or host toolchains install libgcc.a:
-    //   /usr/lib/gcc/<musl-triple>/<ver>/libgcc.a   (musl cross-compiler)
-    //   /usr/lib/gcc/<gnu-triple>/<ver>/libgcc.a    (host GCC via musl-tools wrapper)
+    // 2. Fallback to manual directory scanning
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "x86_64".into());
+    let musl_triple = format!("{arch}-linux-musl");
+    let gnu_triple = format!("{arch}-linux-gnu");
+    let alpine_triple = format!("{arch}-alpine-linux-musl");
+
     let search_roots = [
-        PathBuf::from(format!("/usr/lib/gcc/{musl_triple}")),
-        PathBuf::from(format!("/usr/lib/gcc/{gnu_triple}")),
+        std::path::PathBuf::from(format!("/usr/lib/gcc/{musl_triple}")),
+        std::path::PathBuf::from(format!("/usr/lib/gcc/{gnu_triple}")),
+        std::path::PathBuf::from(format!("/usr/lib/gcc/{alpine_triple}")),
     ];
 
     for root in &search_roots {
@@ -376,6 +398,5 @@ fn find_musl_libgcc() -> Option<PathBuf> {
             }
         }
     }
-
     None
 }
